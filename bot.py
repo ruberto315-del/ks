@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from aiogram import Bot, Dispatcher, F, Router
+from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
@@ -62,23 +63,29 @@ def item_label(name: str, has: bool) -> str:
 
 
 def build_group_keyboard(group_idx: int, status: list[list[bool]]) -> InlineKeyboardMarkup:
+    """Дві кнопки в ряд — менше рядків у JSON, швидше editMessageReplyMarkup."""
     rows: list[list[InlineKeyboardButton]] = []
     items = GROUP_ITEMS[group_idx]
     st = status[group_idx]
+    row: list[InlineKeyboardButton] = []
     for i, name in enumerate(items):
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    text=item_label(name, st[i]),
-                    callback_data=f"t:{group_idx}:{i}",
-                )
-            ]
+        row.append(
+            InlineKeyboardButton(
+                text=item_label(name, st[i]),
+                callback_data=f"t:{group_idx}:{i}",
+            )
         )
-    nav_row = [
-        InlineKeyboardButton(text="⬅️ Назад", callback_data="nav:prev"),
-        InlineKeyboardButton(text="➡️ Далі", callback_data="nav:next"),
-    ]
-    rows.append(nav_row)
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append(
+        [
+            InlineKeyboardButton(text="⬅️ Назад", callback_data="nav:prev"),
+            InlineKeyboardButton(text="➡️ Далі", callback_data="nav:next"),
+        ]
+    )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -149,7 +156,6 @@ async def cmd_start(message: Message) -> None:
         "👋 Привіт!\n\n"
         "Це бот для <b>ранкової перевірки продуктів</b> на складі.\n\n"
         "Щоб почати роботу, надішли команду <b>/st</b>.",
-        parse_mode=ParseMode.HTML,
     )
 
 
@@ -164,7 +170,6 @@ async def cmd_st(message: Message) -> None:
     await message.answer(
         "🌅 <b>Ранкова перевірка продуктів</b>\n\nНатисніть кнопку нижче, щоб почати.",
         reply_markup=kb,
-        parse_mode=ParseMode.HTML,
     )
 
 
@@ -177,12 +182,11 @@ async def cb_start(query: CallbackQuery) -> None:
     sess = get_session(uid)
     sess.screen = "group"
     sess.group_idx = 0
+    await query.answer()
     await query.message.edit_text(
         group_caption(0),
         reply_markup=build_group_keyboard(0, sess.status),
-        parse_mode=ParseMode.HTML,
     )
-    await query.answer()
 
 
 @router.callback_query(F.data.startswith("t:"))
@@ -207,8 +211,8 @@ async def cb_toggle(query: CallbackQuery) -> None:
         await query.answer()
         return
     sess.status[g][i] = not sess.status[g][i]
-    await query.message.edit_reply_markup(reply_markup=build_group_keyboard(g, sess.status))
     await query.answer()
+    await query.message.edit_reply_markup(reply_markup=build_group_keyboard(g, sess.status))
 
 
 @router.callback_query(F.data.in_(("nav:prev", "nav:next")))
@@ -231,33 +235,30 @@ async def cb_nav(query: CallbackQuery) -> None:
                     [InlineKeyboardButton(text="Почати перевірку", callback_data="flow:start")],
                 ]
             )
+            await query.answer()
             await query.message.edit_text(
                 "🌅 <b>Ранкова перевірка продуктів</b>\n\nНатисніть кнопку нижче, щоб почати.",
                 reply_markup=kb,
-                parse_mode=ParseMode.HTML,
             )
-            await query.answer()
             return
         idx -= 1
     else:
         if idx >= len(GROUP_TITLES) - 1:
             sess.screen = "summary"
+            await query.answer()
             await query.message.edit_text(
                 summary_text(),
                 reply_markup=summary_keyboard(),
-                parse_mode=ParseMode.HTML,
             )
-            await query.answer()
             return
         idx += 1
 
     sess.group_idx = idx
+    await query.answer()
     await query.message.edit_text(
         group_caption(idx),
         reply_markup=build_group_keyboard(idx, sess.status),
-        parse_mode=ParseMode.HTML,
     )
-    await query.answer()
 
 
 @router.callback_query(F.data.in_(("rep:missing", "rep:have", "rep:back")))
@@ -272,12 +273,11 @@ async def cb_report(query: CallbackQuery) -> None:
             await query.answer()
             return
         sess.screen = "summary"
+        await query.answer()
         await query.message.edit_text(
             summary_text(),
             reply_markup=summary_keyboard(),
-            parse_mode=ParseMode.HTML,
         )
-        await query.answer()
         return
 
     if sess.screen != "summary":
@@ -287,12 +287,11 @@ async def cb_report(query: CallbackQuery) -> None:
     kind = "missing" if query.data == "rep:missing" else "have"
     sess.screen = "report_missing" if kind == "missing" else "report_have"
     text = format_report(kind, sess.status)
+    await query.answer()
     await query.message.edit_text(
         text,
         reply_markup=back_from_report_keyboard(),
-        parse_mode=ParseMode.HTML,
     )
-    await query.answer()
 
 
 async def _health(_request: web.Request) -> web.StreamResponse:
@@ -303,7 +302,7 @@ async def main() -> None:
     token = os.getenv("BOT_TOKEN")
     if not token:
         raise SystemExit("Задайте BOT_TOKEN у змінних оточення або у файлі .env")
-    bot = Bot(token)
+    bot = Bot(token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher()
     dp.include_router(router)
     me = await bot.get_me()
